@@ -8,63 +8,78 @@ pub enum Base {
     Sum,
     Float,
     Int,
+    Unit,
+    Bool,
 }
 #[derive(PartialEq, Debug, Clone)]
 pub enum Type {
-    Gen(TypeVar, Box<Type>),
+    Closed(Box<Type>),
     Var(TypeVar),
     Base(Base, Vec<Type>),
     Ref(TypeIdx),
 }
 use Type::*;
 impl Type {
-    fn dbg(&self, ctx: &Context) {
+    fn dbg(&self, ctx: &Context, right: bool) {
         match self {
-            Gen(v, t) => {
-                print!("∀'{} ", v);
-                t.dbg(ctx);
+            Closed(t) => {
+                print!("Closed ");
+                t.dbg(ctx, false);
             }
             Var(v) => print!("'{}", v),
-            Base(_, ts) => {
-                print!("(");
-                ts[0].dbg(ctx);
-                print!(" → ");
-                ts[1].dbg(ctx);
-                print!(")");
-            }
-            Ref(idx) => ctx.types[*idx].as_ref().unwrap().dbg(ctx),
+            Base(b, ts) => match b {
+                Base::Fun => {
+                    if !right {
+                        print!("(")
+                    };
+                    ts[0].dbg(ctx, false);
+                    print!(" → ");
+                    ts[1].dbg(ctx, true);
+                    if !right {
+                        print!(")")
+                    };
+                }
+                Base::Sum => todo!(),
+                Base::Float => print!("float"),
+                Base::Int => print!("int"),
+                Base::Unit => print!("unit"),
+                Base::Bool => print!("bool"),
+            },
+            Ref(idx) => ctx.types[*idx].as_ref().unwrap().dbg(ctx, right),
+            _ => {}
         }
     }
     fn contains(&self, ctx: &Context, var: u64) -> bool {
         match self {
             Var(v) => *v == var,
             Base(_, args) => args.iter().any(|t| t.contains(ctx, var)),
-            Gen(_, t) => t.contains(ctx, var),
+            Closed(t) => t.contains(ctx, var),
             Ref(id) => ctx.types[*id]
                 .as_ref()
                 .map(|t| t.contains(ctx, var))
                 .unwrap_or(false),
+            _ => false,
         }
     }
-    fn apply(&mut self, sub: &Sub) -> bool {
+    fn apply(&mut self, sub: &Sub) {
         match self {
             Var(v) => {
                 if *v == sub.target {
                     *self = sub.v.clone();
-                    return true;
                 }
-                false
             }
-            Base(_, args) => args.iter_mut().all(|a| a.apply(sub)),
-            Gen(_, t) => t.apply(sub),
-            Ref(_) => true, // Later do tree descent but for now linear covers everything
+            Base(_, args) => {
+                for a in args.iter_mut() {
+                    a.apply(sub)
+                }
+            }
+            Closed(t) => t.apply(sub),
+            Ref(_) => {} // Later do tree descent but for now linear covers everything
         }
     }
     fn apply_all(&mut self, subs: &[Sub]) -> bool {
         for sub in subs.iter().rev() {
-            if self.apply(sub) {
-                return true;
-            }
+            self.apply(sub);
         }
         false
     }
@@ -119,39 +134,55 @@ impl Context {
         self.next_free += 1;
         self.next_free - 1
     }
-    fn instance_step(&mut self, t: &Type) -> Option<Sub> {
+    fn full_clone(&self, t: Type) -> Option<Type> {
         match t {
-            Gen(v, t) => Some(sub(Var(self.gen()), *v)),
-            Base(_, ts) => ts.iter().map(|t| self.instance_step(t)).flatten().next(),
-            Ref(_) => unreachable!(),
-            Var(_) => None,
-        }
-    }
-    fn full_clone(&self, t: &Type) -> Option<Type> {
-        match t {
-            Gen(_, t) => self.full_clone(t),
+            Closed(t) => Some(Closed(Box::new(self.full_clone(*t)?))),
             Base(b, ts) => {
                 let mut v = Vec::with_capacity(ts.len());
-                for t in ts.iter() {
+                for t in ts {
                     v.push(self.full_clone(t)?);
                 }
-                Some(Base(*b, v))
+                Some(Base(b, v))
             }
-            Ref(idx) => self.full_clone(self.types[*idx].as_ref()?),
-            t => Some(t.clone()),
+            Ref(idx) => self.full_clone(self.types[idx].clone()?),
+            t => Some(t),
         }
     }
     fn instance(&mut self, t: Type) -> Option<Type> {
-        let mut t = self.full_clone(&t)?;
-        while let Some(sub) = self.instance_step(&t) {
-            t.apply(&sub);
+        match t {
+            Closed(t) => {
+                let mut t = self.full_clone(*t)?;
+                let initial = self.gen();
+                while let Some(sub) = self.instance_step(&t, initial) {
+                    t.apply(&sub);
+                }
+                Some(t)
+            }
+            _ => Some(t),
         }
-        Some(t)
+    }
+    fn instance_step(&mut self, t: &Type, initial: TypeVar) -> Option<Sub> {
+        match t {
+            Base(_, ts) => ts
+                .iter()
+                .map(|t| self.instance_step(t, initial))
+                .flatten()
+                .next(),
+            Var(v) => {
+                if *v < initial {
+                    Some(sub(Var(self.gen()), *v))
+                } else {
+                    None
+                }
+            }
+            _ => unreachable!(),
+        }
     }
     pub fn dbg(&mut self, exprs: &[Expr], src: &str) {
         for idx in 0..exprs.len() {
             let r = &exprs[idx].range;
-            self.types[idx].as_ref().unwrap().dbg(self);
+            print!("{}: ", src[r.clone()].trim());
+            self.types[idx].as_ref().map(|v| v.dbg(self, true));
             println!();
         }
     }
@@ -166,10 +197,7 @@ pub fn infer(ctx: &mut Context, exprs: &[Expr], idx: ExprIdx) -> Option<()> {
         } => {
             let b = ctx.gen();
             ctx.types[*arg] = Some(Var(b));
-            ctx.types[idx] = Some(Gen(
-                b,
-                Box::new(Base(Base::Fun, vec![Ref(*arg), Ref(*body)])),
-            ));
+            ctx.types[idx] = Some(Base(Base::Fun, vec![Ref(*arg), Ref(*body)]));
             infer(ctx, exprs, *body);
         }
         ExprType::App(e1, e2) => {
@@ -179,17 +207,31 @@ pub fn infer(ctx: &mut Context, exprs: &[Expr], idx: ExprIdx) -> Option<()> {
             let alt = Base(Base::Fun, vec![Ref(*e2), Var(b)]);
             ctx.types[idx] = Some(Var(b));
             // Make sure every branch sets ctx.types[idx] to Some when correct or else this fails
-            let ty = ctx.instance(ctx.types[*e1].as_ref()?.clone())?;
-            ctx.apply(&unify(ctx, alt, ty)?);
+            let ty = ctx.types[*e1].clone()?;
+            ctx.apply(&unify(ctx, ctx.full_clone(alt)?, ctx.full_clone(ty)?)?);
         }
-        ExprType::Let { var, val, cont } => {
+        ExprType::Let {
+            definition,
+            var,
+            val,
+            cont,
+        } => {
+            ctx.types[*val] = Some(Var(ctx.gen()));
+            ctx.types[*var] = if *definition {
+                Some(Closed(Box::new(Ref(*val))))
+            } else {
+                Some(Ref(*val))
+            };
             infer(ctx, exprs, *val);
-            ctx.types[*var] = Some(Ref(*val));
             infer(ctx, exprs, *cont);
             ctx.types[idx] = Some(Ref(*cont));
         }
         ExprType::Var(_) => {}
-        ExprType::Ident(_, var) => ctx.types[idx] = Some(ctx.instance(Ref(*var))?),
+        ExprType::Ident(_, var) => ctx.types[idx] = ctx.instance(ctx.types[*var].clone()?),
+        ExprType::Lit(l) => match l {
+            Literal::Float(_) => ctx.types[idx] = Some(Base(Base::Float, vec![])),
+            Literal::Int(_) => ctx.types[idx] = Some(Base(Base::Int, vec![])),
+        },
     }
     Some(())
 }
