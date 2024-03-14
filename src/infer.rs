@@ -17,6 +17,8 @@ pub enum Type {
     Var(TypeVar),
     Base(Base, Vec<Type>),
     Ref(TypeIdx),
+    Mu(Box<Type>),
+    MuRef(u64),
 }
 use Type::*;
 impl Type {
@@ -45,7 +47,22 @@ impl Type {
                 Base::Unit => print!("unit"),
                 Base::Bool => print!("bool"),
             },
-            Ref(idx) => ctx.types[*idx].as_ref().unwrap().dbg(ctx, right),
+            Mu(t) => {
+                print!("µ(");
+                t.dbg(ctx, true);
+                print!(")");
+            }
+            MuRef(i) => {
+                print!("<{}>", i);
+            }
+            Ref(idx) => {
+                let t = ctx.types[*idx].as_ref();
+                if let Some(t) = t {
+                    t.dbg(ctx, right)
+                } else {
+                    print!("nullref")
+                }
+            }
             _ => {}
         }
     }
@@ -62,19 +79,19 @@ impl Type {
         }
     }
     fn apply(&mut self, sub: &Sub) {
+        if self == &sub.target {
+            *self = sub.v.clone()
+        }
         match self {
-            Var(v) => {
-                if *v == sub.target {
-                    *self = sub.v.clone();
-                }
-            }
+            Var(v) => {}
             Base(_, args) => {
                 for a in args.iter_mut() {
                     a.apply(sub)
                 }
             }
             Closed(t) => t.apply(sub),
-            Ref(_) => {} // Later do tree descent but for now linear covers everything
+            Mu(t) => t.apply(sub),
+            Ref(_) | MuRef(_) => {} // Later do tree descent but for now linear covers everything
         }
     }
     fn apply_all(&mut self, subs: &[Sub]) -> bool {
@@ -86,22 +103,22 @@ impl Type {
 }
 #[derive(PartialEq, Debug, Clone)]
 struct Sub {
-    target: u64,
+    target: Type,
     v: Type,
 }
-pub fn sub(v: Type, target: u64) -> Sub {
+pub fn sub(v: Type, target: Type) -> Sub {
     Sub { v, target }
 }
-fn unify(ctx: &Context, mut a: Type, mut b: Type) -> Option<Vec<Sub>> {
+fn unify(ctx: &Context, a: Type, b: Type) -> Option<Vec<Sub>> {
     Some(match (a, b) {
         (Var(a), Var(b)) if a != b => {
-            vec![sub(Var(a), b)]
+            vec![sub(Var(a), Var(b))]
         }
         (Var(a), t) if !t.contains(ctx, a) => {
-            vec![sub(t, a)]
+            vec![sub(t, Var(a))]
         }
         (t, Var(b)) if !t.contains(ctx, b) => {
-            vec![sub(t, b)]
+            vec![sub(t, Var(b))]
         }
         (a, b) if a == b => {
             vec![]
@@ -118,6 +135,47 @@ fn unify(ctx: &Context, mut a: Type, mut b: Type) -> Option<Vec<Sub>> {
         }
         _ => return None,
     })
+}
+fn replace_in(v: &Type, target: &mut Type, depth: u64) {
+    if target == v {
+        *target = MuRef(depth);
+        return;
+    }
+    match target {
+        Type::Base(_, ts) => {
+            for t in ts.iter_mut() {
+                replace_in(v, t, depth);
+            }
+        }
+        Mu(t) => replace_in(v, t, depth + 1),
+        _ => {}
+    }
+}
+fn unroll_step(v: &Type, target: &mut Type, depth: u64) {
+    match target {
+        Type::Base(_, ts) => {
+            for t in ts.iter_mut() {
+                unroll_step(v, t, depth);
+            }
+        }
+        Mu(t) => unroll_step(v, t, depth + 1),
+        MuRef(i) => {
+            if *i == depth {
+                *target = v.clone()
+            }
+        }
+        _ => {}
+    }
+}
+fn unroll(v: Type) -> Type {
+    let cloned = v.clone();
+    match v {
+        Mu(mut t) => {
+            unroll_step(&cloned, &mut t, 0);
+            unroll(*t)
+        }
+        t => t,
+    }
 }
 #[derive(Debug)]
 pub struct Context {
@@ -170,11 +228,13 @@ impl Context {
                 .next(),
             Var(v) => {
                 if *v < initial {
-                    Some(sub(Var(self.gen()), *v))
+                    Some(sub(Var(self.gen()), Var(*v)))
                 } else {
                     None
                 }
             }
+            Mu(t) => self.instance_step(t, initial),
+            MuRef(_) => None,
             _ => unreachable!(),
         }
     }
@@ -208,7 +268,11 @@ pub fn infer(ctx: &mut Context, exprs: &[Expr], idx: ExprIdx) -> Option<()> {
             ctx.types[idx] = Some(Var(b));
             // Make sure every branch sets ctx.types[idx] to Some when correct or else this fails
             let ty = ctx.types[*e1].clone()?;
-            ctx.apply(&unify(ctx, ctx.full_clone(alt)?, ctx.full_clone(ty)?)?);
+            ctx.apply(&unify(
+                ctx,
+                ctx.full_clone(alt)?,
+                unroll(ctx.full_clone(ty)?),
+            )?);
         }
         ExprType::Let {
             definition,
@@ -216,13 +280,21 @@ pub fn infer(ctx: &mut Context, exprs: &[Expr], idx: ExprIdx) -> Option<()> {
             val,
             cont,
         } => {
-            ctx.types[*val] = Some(Var(ctx.gen()));
-            ctx.types[*var] = if *definition {
-                Some(Closed(Box::new(Ref(*val))))
-            } else {
-                Some(Ref(*val))
-            };
+            ctx.types[*var] = Some(Var(ctx.gen()));
             infer(ctx, exprs, *val);
+            let var_ty = ctx.full_clone(ctx.types[*var].clone()?)?;
+            let mut val_ty = ctx.full_clone(ctx.types[*val].clone()?)?;
+            if let Some(subs) = unify(ctx, var_ty.clone(), val_ty.clone()) {
+                ctx.apply(&subs);
+            } else {
+                replace_in(&var_ty, &mut val_ty, 0);
+                ctx.types[*var] = Some(Mu(Box::new(var_ty.clone())));
+                ctx.types[*val] = Some(Mu(Box::new(val_ty.clone())));
+            }
+            ctx.apply(&unify(ctx, var_ty, val_ty).unwrap());
+            if *definition {
+                ctx.types[*var] = Some(Closed(Box::new(ctx.types[*var].clone()?)))
+            }
             infer(ctx, exprs, *cont);
             ctx.types[idx] = Some(Ref(*cont));
         }
