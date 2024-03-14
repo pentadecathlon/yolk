@@ -80,7 +80,8 @@ impl Type {
     }
     fn apply(&mut self, sub: &Sub) {
         if self == &sub.target {
-            *self = sub.v.clone()
+            *self = sub.v.clone();
+            return;
         }
         match self {
             Var(v) => {}
