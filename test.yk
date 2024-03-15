@@ -1,3 +1,10 @@
-foo_bar = \[pair float float] a foo_bar
-
-\a a
+some : \v\some\none
+    (some v)
+none : \some\none
+    (none unit)
+pair : \a\b\f (f a b)
+a = ~
+    b = ~
+        (pair a b)
+    b
+a

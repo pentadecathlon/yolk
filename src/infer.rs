@@ -112,6 +112,9 @@ pub fn sub(v: Type, target: Type) -> Sub {
 }
 fn unify(ctx: &Context, a: Type, b: Type) -> Option<Vec<Sub>> {
     Some(match (a, b) {
+        (a, b) if a == b => {
+            vec![]
+        }
         (Var(a), Var(b)) if a != b => {
             vec![sub(Var(a), Var(b))]
         }
@@ -121,9 +124,15 @@ fn unify(ctx: &Context, a: Type, b: Type) -> Option<Vec<Sub>> {
         (t, Var(b)) if !t.contains(ctx, b) => {
             vec![sub(t, Var(b))]
         }
-        (a, b) if a == b => {
-            vec![]
+        (Var(a), mut t) => {
+            let pre = t.clone();
+            replace_in(a, &mut t, 0);
+            vec![
+                sub(Mu(Box::new(t.clone())), pre),
+                sub(Mu(Box::new(t)), Var(a)),
+            ]
         }
+        (t, Var(b)) => unify(ctx, Var(b), t)?,
         (Base(a, mut l1), Base(b, mut l2)) if l1.len() == l2.len() => {
             let u_1 = unify(ctx, l1.pop()?, l2.pop()?)?;
             let mut ap = Base(a, l1);
@@ -137,8 +146,8 @@ fn unify(ctx: &Context, a: Type, b: Type) -> Option<Vec<Sub>> {
         _ => return None,
     })
 }
-fn replace_in(v: &Type, target: &mut Type, depth: u64) {
-    if target == v {
+fn replace_in(v: TypeVar, target: &mut Type, depth: u64) {
+    if target == &Var(v) {
         *target = MuRef(depth);
         return;
     }
@@ -284,15 +293,8 @@ pub fn infer(ctx: &mut Context, exprs: &[Expr], idx: ExprIdx) -> Option<()> {
             ctx.types[*var] = Some(Var(ctx.gen()));
             infer(ctx, exprs, *val);
             let var_ty = ctx.full_clone(ctx.types[*var].clone()?)?;
-            let mut val_ty = ctx.full_clone(ctx.types[*val].clone()?)?;
-            if let Some(subs) = unify(ctx, var_ty.clone(), val_ty.clone()) {
-                ctx.apply(&subs);
-            } else {
-                replace_in(&var_ty, &mut val_ty, 0);
-                ctx.types[*var] = Some(Mu(Box::new(var_ty.clone())));
-                ctx.types[*val] = Some(Mu(Box::new(val_ty.clone())));
-            }
-            ctx.apply(&unify(ctx, var_ty, val_ty).unwrap());
+            let val_ty = ctx.full_clone(ctx.types[*val].clone()?)?;
+            ctx.apply(&unify(ctx, var_ty, val_ty)?);
             if *definition {
                 ctx.types[*var] = Some(Closed(Box::new(ctx.types[*var].clone()?)))
             }
