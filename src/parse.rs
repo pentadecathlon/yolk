@@ -61,7 +61,9 @@ enum Token {
     OpenBracket,
     CloseBracket,
     Comma,
+    // bool for whether it has a named arg or not
     Abs(bool),
+    // bool for whether its polymorphic
     Assign(bool),
     Ident(Rc<str>),
     Int(i64),

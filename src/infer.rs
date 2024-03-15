@@ -122,6 +122,8 @@ fn sub(v: Type, target: Type) -> Sub {
 /// Calculates which substitutions are needed to make two types equal.
 /// eg if expression foo must have type 'a -> int and float -> 'b, then substitute float
 /// for 'a and int for 'b to get float -> int
+/// the main motivation for substitutions is that it means you can apply the new information
+/// globally very easily
 fn unify(ctx: &Context, a: Type, b: Type) -> Option<Vec<Sub>> {
     Some(match (a, b) {
         // Equal, no subs needed
