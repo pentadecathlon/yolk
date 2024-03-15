@@ -1,6 +1,6 @@
 use crate::parse::*;
+// Place holder variable/generic
 type TypeVar = u64;
-type Var = usize;
 type TypeIdx = usize;
 #[derive(PartialEq, Debug, Clone, Copy)]
 pub enum Base {
@@ -15,9 +15,15 @@ pub enum Base {
 pub enum Type {
     Closed(Box<Type>),
     Var(TypeVar),
+    // really should split this into function and base but the reference said to treat stuff like int as just zero param
+    // type functions and that did make sense and save space when i had multiple type functions (function and sum)
+    // but now no sum but anyways
     Base(Base, Vec<Type>),
+    // Ref type to avoid cloning too much
     Ref(TypeIdx),
+    // mu type, µx.<type> just means that every x inside the <type> is the type of the whole mu expression
     Mu(Box<Type>),
+    // but we use de Brujin indices instead of letter args
     MuRef(u64),
 }
 use Type::*;
@@ -66,6 +72,7 @@ impl Type {
             _ => {}
         }
     }
+    /// Check if a type contains a type variable
     fn contains(&self, ctx: &Context, var: u64) -> bool {
         match self {
             Var(v) => *v == var,
@@ -78,6 +85,7 @@ impl Type {
             _ => false,
         }
     }
+    /// Apply a substitution to a type
     fn apply(&mut self, sub: &Sub) {
         if self == &sub.target {
             *self = sub.v.clone();
@@ -102,28 +110,36 @@ impl Type {
         false
     }
 }
+/// A substitution is an instruction to replace all instances of <target> with <v>
 #[derive(PartialEq, Debug, Clone)]
 struct Sub {
     target: Type,
     v: Type,
 }
-pub fn sub(v: Type, target: Type) -> Sub {
+fn sub(v: Type, target: Type) -> Sub {
     Sub { v, target }
 }
+/// Calculates which substitutions are needed to make two types equal.
+/// eg if expression foo must have type 'a -> int and float -> 'b, then substitute float
+/// for 'a and int for 'b to get float -> int
 fn unify(ctx: &Context, a: Type, b: Type) -> Option<Vec<Sub>> {
     Some(match (a, b) {
+        // Equal, no subs needed
         (a, b) if a == b => {
             vec![]
         }
+        // Merge the two variables
         (Var(a), Var(b)) if a != b => {
             vec![sub(Var(a), Var(b))]
         }
+        // Replace the variable with t, if t doesn't contain the variable
         (Var(a), t) if !t.contains(ctx, a) => {
             vec![sub(t, Var(a))]
         }
         (t, Var(b)) if !t.contains(ctx, b) => {
             vec![sub(t, Var(b))]
         }
+        // Now its known that t does contain the variable, so its recursive and we use mu
         (Var(a), mut t) => {
             let pre = t.clone();
             replace_in(a, &mut t, 0);
@@ -133,6 +149,7 @@ fn unify(ctx: &Context, a: Type, b: Type) -> Option<Vec<Sub>> {
             ]
         }
         (t, Var(b)) => unify(ctx, Var(b), t)?,
+        // For functions, unify the last pair of args, apply all subsitutions, and then unify the second
         (Base(a, mut l1), Base(b, mut l2)) if l1.len() == l2.len() => {
             let u_1 = unify(ctx, l1.pop()?, l2.pop()?)?;
             let mut ap = Base(a, l1);
@@ -146,6 +163,7 @@ fn unify(ctx: &Context, a: Type, b: Type) -> Option<Vec<Sub>> {
         _ => return None,
     })
 }
+// Replace instances of v in target with the appropriate index for the mu type
 fn replace_in(v: TypeVar, target: &mut Type, depth: u64) {
     if target == &Var(v) {
         *target = MuRef(depth);
@@ -177,6 +195,7 @@ fn unroll_step(v: &Type, target: &mut Type, depth: u64) {
         _ => {}
     }
 }
+/// Unrolls a mu, so that if it's a function it can be called, eg µx. int -> x becomes int -> µx. int -> x
 fn unroll(v: Type) -> Type {
     let cloned = v.clone();
     match v {
@@ -189,7 +208,9 @@ fn unroll(v: Type) -> Type {
 }
 #[derive(Debug)]
 pub struct Context {
+    // Types of all expressions, Nones haven't been evaluated yet
     pub types: Vec<Option<Type>>,
+    // for generating a new type var
     pub next_free: TypeVar,
 }
 impl Context {
@@ -202,6 +223,7 @@ impl Context {
         self.next_free += 1;
         self.next_free - 1
     }
+    // Clone a type and follow Refs
     fn full_clone(&self, t: Type) -> Option<Type> {
         match t {
             Closed(t) => Some(Closed(Box::new(self.full_clone(*t)?))),
@@ -216,6 +238,7 @@ impl Context {
             t => Some(t),
         }
     }
+    // Instance a polymorphic function
     fn instance(&mut self, t: Type) -> Option<Type> {
         match t {
             Closed(t) => {
@@ -265,19 +288,24 @@ pub fn infer(ctx: &mut Context, exprs: &[Expr], idx: ExprIdx) -> Option<()> {
             strict,
             body,
         } => {
+            // Create new variable for the argument type
             let b = ctx.gen();
             ctx.types[*arg] = Some(Var(b));
+            // idx is the current expression, assign it b -> type of body
             ctx.types[idx] = Some(Base(Base::Fun, vec![Ref(*arg), Ref(*body)]));
             infer(ctx, exprs, *body);
         }
         ExprType::App(e1, e2) => {
             infer(ctx, exprs, *e1);
             infer(ctx, exprs, *e2);
+            // Create new variable for the output type
             let b = ctx.gen();
             let alt = Base(Base::Fun, vec![Ref(*e2), Var(b)]);
             ctx.types[idx] = Some(Var(b));
             // Make sure every branch sets ctx.types[idx] to Some when correct or else this fails
             let ty = ctx.types[*e1].clone()?;
+            // We have two types for e1, the type inferred from its actual expression, and the fact that it has to
+            // be a function that takes the type of e2 and returns b, this unifies the two types
             ctx.apply(&unify(
                 ctx,
                 ctx.full_clone(alt)?,
@@ -290,12 +318,16 @@ pub fn infer(ctx: &mut Context, exprs: &[Expr], idx: ExprIdx) -> Option<()> {
             val,
             cont,
         } => {
+            // Variable for the new variable
             ctx.types[*var] = Some(Var(ctx.gen()));
             infer(ctx, exprs, *val);
             let var_ty = ctx.full_clone(ctx.types[*var].clone()?)?;
             let val_ty = ctx.full_clone(ctx.types[*val].clone()?)?;
+            // Unify the type of the variable and the type of the value assigned to it
             ctx.apply(&unify(ctx, var_ty, val_ty)?);
             if *definition {
+                // If polymorphic, we close the type, so that future uses of it don't change it
+                // since it gets instanced with new variables instead of referred to directly
                 ctx.types[*var] = Some(Closed(Box::new(ctx.types[*var].clone()?)))
             }
             infer(ctx, exprs, *cont);

@@ -14,6 +14,7 @@ fn main() {
         var: "".into(),
         id: 0,
     };
+    // Add some words to the start scope
     let scope = scope.keyword("float", &mut exprs);
     let scope = scope.keyword("int", &mut exprs);
     let scope = scope.keyword("unit", &mut exprs);
@@ -32,6 +33,7 @@ fn main() {
         types: vec![None; exprs.len()],
         next_free: 1,
     };
+    // give those words types (this is dumb but like its fine ill make start up pretty later)
     ctx.types[0] = Some(Type::Base(Base::Float, vec![]));
     ctx.types[1] = Some(Type::Base(Base::Int, vec![]));
     ctx.types[2] = Some(Type::Base(Base::Unit, vec![]));

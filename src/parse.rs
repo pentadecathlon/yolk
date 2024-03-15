@@ -6,12 +6,16 @@ pub enum Literal {
 }
 #[derive(Debug)]
 pub enum ExprType {
+    // lambda (abstraction)
     Abs {
         arg: ExprIdx,
+        // Not used yet, for annotations, later
         ty: Option<ExprIdx>,
+        // uhhh thing (? also not used yet)
         strict: bool,
         body: ExprIdx,
     },
+    // Application
     App(ExprIdx, ExprIdx),
     Let {
         definition: bool,
@@ -19,6 +23,7 @@ pub enum ExprType {
         val: ExprIdx,
         cont: ExprIdx,
     },
+    // Not really an expression but we store variables as expressions for typing reasons
     Var(Rc<str>),
     Ident(Rc<str>, ExprIdx),
     Lit(Literal),
