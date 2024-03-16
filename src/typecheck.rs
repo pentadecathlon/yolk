@@ -1,7 +1,7 @@
 use crate::{
     parse::Expr,
     report::{err, Error},
-    Base, Type,
+    unroll, Base, Type,
 };
 pub fn check(types: &[Option<Type>], exprs: &[Expr], names: &[String]) -> Vec<Error> {
     let mut errors = Vec::new();
@@ -10,23 +10,27 @@ pub fn check(types: &[Option<Type>], exprs: &[Expr], names: &[String]) -> Vec<Er
             errors.push(err("Could not infer this type", expr.range.clone()))
         }
         match expr.ty {
-            crate::parse::ExprType::App(f, val) => match &types[f] {
-                Some(Type::Base(Base::Fun, ts)) => {
-                    if let Some(v) = &types[val] {
-                        if !ts[1].equal(v, types) {
-                            errors.push(err(
-                                &format!(
-                                    "Function type {} does not match input type {}",
-                                    &names[f], &names[val]
-                                ),
-                                expr.range.clone(),
-                            ))
+            crate::parse::ExprType::App(fun, val) => {
+                if let Some(f) = types[fun].clone() {
+                    match unroll(f) {
+                        Type::Base(Base::Fun, ts) => {
+                            if let Some(v) = &types[val] {
+                                if !ts[0].equal(v, types) {
+                                    errors.push(err(
+                                        &format!(
+                                            "Function type {} does not match input type {}",
+                                            &names[fun], &names[val]
+                                        ),
+                                        expr.range.clone(),
+                                    ))
+                                }
+                            }
                         }
+                        _ => errors.push(err("Expected a function", exprs[fun].range.clone())),
                     }
+                } else {
                 }
-                None => {} // Gets caught later
-                _ => errors.push(err("Expected a function", exprs[f].range.clone())),
-            },
+            }
             crate::parse::ExprType::Let {
                 definition,
                 var,

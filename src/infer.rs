@@ -161,7 +161,7 @@ fn sub(v: Type, target: Type) -> Sub {
 fn unify(ctx: &Context, a: Type, b: Type) -> Option<Vec<Sub>> {
     Some(match (a, b) {
         // Equal, no subs needed
-        (a, b) if a == b => {
+        (a, b) if a.equal(&b, &ctx.types) => {
             vec![]
         }
         // Merge the two variables
@@ -229,7 +229,7 @@ fn unroll_step(v: &Type, target: &mut Type, depth: u64) {
     }
 }
 /// Unrolls a mu, so that if it's a function it can be called, eg µx. int -> x becomes int -> µx. int -> x
-fn unroll(v: Type) -> Type {
+pub fn unroll(v: Type) -> Type {
     let cloned = v.clone();
     match v {
         Mu(mut t) => {
@@ -358,8 +358,8 @@ pub fn infer(ctx: &mut Context, exprs: &[Expr], idx: ExprIdx) -> Option<()> {
             // Variable for the new variable
             ctx.types[*var] = Some(Var(ctx.gen()));
             infer(ctx, exprs, *val);
-            let var_ty = ctx.full_clone(ctx.types[*var].clone()?)?;
-            let val_ty = ctx.full_clone(ctx.types[*val].clone()?)?;
+            let var_ty = unroll(ctx.full_clone(ctx.types[*var].clone()?)?);
+            let val_ty = unroll(ctx.full_clone(ctx.types[*val].clone()?)?);
             // Unify the type of the variable and the type of the value assigned to it
             ctx.apply(&unify(ctx, var_ty, val_ty)?);
             if *definition {
