@@ -1,7 +1,8 @@
 mod infer;
 mod parse;
 mod report;
-use crate::infer::*;
+mod typecheck;
+use crate::{infer::*, typecheck::check};
 use std::time::Instant;
 fn fun(a: Type, b: Type) -> Type {
     Type::Base(Base::Fun, vec![a, b])
@@ -51,6 +52,10 @@ fn main() {
     ))));
     let start = Instant::now();
     infer(&mut ctx, &exprs, exprs.len() - 1);
-    ctx.dbg(&exprs, src);
+    let names = ctx.dbg(&exprs, src);
+    let errors = check(&ctx.types, &exprs, &names);
+    for error in errors {
+        error.report(src);
+    }
     dbg!(Instant::now() - start);
 }

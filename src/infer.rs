@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use crate::parse::*;
 // Place holder variable/generic
 type TypeVar = u64;
@@ -28,48 +30,79 @@ pub enum Type {
 }
 use Type::*;
 impl Type {
-    fn dbg(&self, ctx: &Context, right: bool) {
+    pub fn dbg(&self, out: &mut String, ctx: &Context, right: bool) {
         match self {
             Closed(t) => {
-                print!("Closed ");
-                t.dbg(ctx, false);
+                write!(out, "Closed ");
+                t.dbg(out, ctx, false);
             }
-            Var(v) => print!("'{}", v),
+            Var(v) => {
+                write!(out, "'{}", v);
+            }
             Base(b, ts) => match b {
                 Base::Fun => {
                     if !right {
-                        print!("(")
+                        write!(out, "(");
                     };
-                    ts[0].dbg(ctx, false);
-                    print!(" → ");
-                    ts[1].dbg(ctx, true);
+                    ts[0].dbg(out, ctx, false);
+                    write!(out, " → ");
+                    ts[1].dbg(out, ctx, true);
                     if !right {
-                        print!(")")
-                    };
+                        write!(out, ")");
+                    }
                 }
                 Base::Sum => todo!(),
-                Base::Float => print!("float"),
-                Base::Int => print!("int"),
-                Base::Unit => print!("unit"),
-                Base::Bool => print!("bool"),
+                Base::Float => {
+                    write!(out, "float");
+                }
+                Base::Int => {
+                    write!(out, "int");
+                }
+                Base::Unit => {
+                    write!(out, "unit");
+                }
+                Base::Bool => {
+                    write!(out, "bool");
+                }
             },
             Mu(t) => {
-                print!("µ(");
-                t.dbg(ctx, true);
-                print!(")");
+                write!(out, "µ(");
+                t.dbg(out, ctx, true);
+                write!(out, ")");
             }
             MuRef(i) => {
-                print!("<{}>", i);
+                write!(out, "<{}>", i);
             }
             Ref(idx) => {
                 let t = ctx.types[*idx].as_ref();
                 if let Some(t) = t {
-                    t.dbg(ctx, right)
+                    t.dbg(out, ctx, right);
                 } else {
-                    print!("nullref")
+                    write!(out, "nullref");
                 }
             }
             _ => {}
+        }
+    }
+    pub fn equal(&self, other: &Type, ctx: &[Option<Type>]) -> bool {
+        match (self, other) {
+            (Ref(a), b) => {
+                if let Some(a) = &ctx[*a] {
+                    a.equal(b, ctx)
+                } else {
+                    false
+                }
+            }
+            (a, Ref(b)) => Ref(*b).equal(a, ctx),
+            (Closed(a), b) => a.equal(b, ctx),
+            (a, Closed(b)) => a.equal(b, ctx),
+            (Type::Base(a, ats), Type::Base(b, bts)) => {
+                a == b && ats.iter().zip(bts.iter()).all(|(a, b)| a.equal(b, ctx))
+            }
+            (Mu(a), Mu(b)) => a.equal(b, ctx),
+            (a @ Mu(_), b) => unroll(a.clone()).equal(b, ctx),
+            (a, b @ Mu(_)) => b.equal(a, ctx),
+            _ => self == other,
         }
     }
     /// Check if a type contains a type variable
@@ -88,6 +121,7 @@ impl Type {
     /// Apply a substitution to a type
     fn apply(&mut self, sub: &Sub) {
         if self == &sub.target {
+            dbg!(&sub);
             *self = sub.v.clone();
             return;
         }
@@ -143,12 +177,9 @@ fn unify(ctx: &Context, a: Type, b: Type) -> Option<Vec<Sub>> {
         }
         // Now its known that t does contain the variable, so its recursive and we use mu
         (Var(a), mut t) => {
-            let pre = t.clone();
+            dbg!(a, &t);
             replace_in(a, &mut t, 0);
-            vec![
-                sub(Mu(Box::new(t.clone())), pre),
-                sub(Mu(Box::new(t)), Var(a)),
-            ]
+            vec![sub(Mu(Box::new(t)), Var(a))]
         }
         (t, Var(b)) => unify(ctx, Var(b), t)?,
         // For functions, unify the last pair of args, apply all subsitutions, and then unify the second
@@ -273,13 +304,17 @@ impl Context {
             _ => unreachable!(),
         }
     }
-    pub fn dbg(&mut self, exprs: &[Expr], src: &str) {
+    pub fn dbg(&mut self, exprs: &[Expr], src: &str) -> Vec<String> {
+        let mut ts = Vec::with_capacity(exprs.len());
         for idx in 0..exprs.len() {
             let r = &exprs[idx].range;
             print!("{}: ", src[r.clone()].trim());
-            self.types[idx].as_ref().map(|v| v.dbg(self, true));
-            println!();
+            let mut s = String::new();
+            self.types[idx].as_ref().map(|v| v.dbg(&mut s, self, true));
+            println!("{}", &s);
+            ts.push(s);
         }
+        ts
     }
 }
 pub fn infer(ctx: &mut Context, exprs: &[Expr], idx: ExprIdx) -> Option<()> {
